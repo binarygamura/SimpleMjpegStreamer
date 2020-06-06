@@ -18,7 +18,9 @@ class ClientProcess(threading.Thread):
         self.auth_callback = None
 
     def close(self):
+        self.socket.shutdown(socket.SHUT_RDWR)
         self.socket.close()
+        self.LOGGER.info('client process is ending.')
 
     def send_simple_response(self, fp, content: str, status_code: int = 200, status_message: str = 'OK',
                              content_type: str = 'text/plain'):
@@ -67,6 +69,10 @@ class ClientProcess(threading.Thread):
                 line = fp.readline()
                 # print('readline "{}"'.format(line))
                 request_line_elements = line.split()
+                # skip if unable to read request line
+                if len(request_line_elements) == 0:
+                    self.LOGGER.info('unable to read request line. terminating process')
+                    return
                 # only GET request are supported
                 if request_line_elements[0] != 'GET':
                     return self.send_simple_response(fp, 'method {} not supported'.format(request_line_elements[0]),
@@ -82,7 +88,7 @@ class ClientProcess(threading.Thread):
                     line = line.strip()
                     if line == '':
                         break
-                    print('processing line {}'.format(line))
+                    # print('processing line {}'.format(line))
                     (header_key, header_value) = line.split(':', 1)
                     if is_authencated == False and header_key.lower() == 'authorization':
                         header_value = header_value.trim()
@@ -105,11 +111,11 @@ class ClientProcess(threading.Thread):
         except Empty:
             self.LOGGER.exception('no images to send!')
         except Exception as e:
-            self.LOGGER.exception('error while handling client process')
+            self.LOGGER.exception('error while handling client process.')
         finally:
-            self.LOGGER.info('client process ended')
+            self.LOGGER.info('client process ended.')
             # always close the socket!
-            self.socket.close()
+            self.close()
             # call the exit callback if there is one
             if self.exit_callback is not None:
                 self.exit_callback(self)
@@ -135,7 +141,13 @@ class MjpegHttpServer(threading.Thread):
     def close(self):
         self.run_flag = False
         if self.server_socket is not None:
+            self.server_socket.shutdown(socket.SHUT_RDWR)
             self.server_socket.close()
+            self.LOGGER.info('closed server socket.')
+        with self.clients_lock:
+            for client in self.clients:
+                client.close()
+                self.LOGGER.info('closed client socket.')
 
     def broadcast_image(self, image_data):
         # get exclusive lock
@@ -146,6 +158,9 @@ class MjpegHttpServer(threading.Thread):
 
     def start_polling_images(self, image_source):
         for image in image_source.get_images():
+            if self.run_flag == False:
+                self.LOGGER.info('stopped polling images from camera.')
+                return
             self.broadcast_image(image)
 
     def create_exitcallback(self):
@@ -167,7 +182,7 @@ class MjpegHttpServer(threading.Thread):
 
                 # run forest... run...
                 while self.run_flag:
-                    self.LOGGER.info('waiting for new connection')
+                    self.LOGGER.info('waiting for new connection.')
                     # wait for new incoming connections.
                     (connection, client_address) = server_socket.accept()
                     # create a ClientProcess which is a Thread
@@ -177,12 +192,10 @@ class MjpegHttpServer(threading.Thread):
                     # add the newly created client to the list of all clients.
                     with self.clients_lock:
                         self.clients.append(client_process)
-                    self.LOGGER.info('started new client process')
+                    self.LOGGER.info('started new client process.')
             except Exception as e:
                 self.LOGGER.exception('error while serving http requests.')
-                pass
             finally:
-                self.LOGGER.info('closing server socket')
+                self.LOGGER.info('closing server socket.')
                 # always close the socket.
-                server_socket.close()
-
+                self.close()
